@@ -255,13 +255,20 @@ def make_context(item: FeedItem) -> str:
 
 
 def format_digest(items: list[FeedItem], now: datetime) -> str:
-    lines = [f"Market Digest - {now.strftime('%B %-d, %Y') if os.name != 'nt' else now.strftime('%B %#d, %Y')}", ""]
+    # Build HTML-formatted message. Use the feed/source as hyperlink text
+    header = now.strftime('%B %-d, %Y') if os.name != 'nt' else now.strftime('%B %#d, %Y')
+    parts: list[str] = [f"<b>Market Digest - {html.escape(header)}</b>", ""]
     for index, item in enumerate(items, start=1):
         title = re.sub(r"\s+", " ", item.title).strip()
-        lines.append(f"{index}. {title} - {make_context(item)}")
-        lines.append(f"    Source: {item.link}")
-        lines.append("")
-    return "\n".join(lines).strip()
+        context = make_context(item)
+        esc_title = html.escape(title)
+        esc_context = html.escape(context)
+        esc_link = html.escape(item.link, quote=True)
+        esc_source = html.escape(item.source)
+        parts.append(f"{index}. {esc_title} - {esc_context}")
+        parts.append(f"Source: <a href=\"{esc_link}\">{esc_source}</a>")
+        parts.append("")
+    return "\n".join(parts).strip()
 
 
 def send_telegram(message: str) -> None:
@@ -281,6 +288,7 @@ def send_telegram(message: str) -> None:
             "chat_id": chat_id,
             "text": message,
             "disable_web_page_preview": "true",
+            "parse_mode": "HTML",
         }
     ).encode("utf-8")
     request = urllib.request.Request(url, data=data, method="POST")
