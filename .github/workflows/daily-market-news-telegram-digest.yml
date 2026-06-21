@@ -1,10 +1,13 @@
 name: Daily Market News Telegram Digest
 
 on:
+  push:
+    branches:
+      - master
   workflow_dispatch:
   schedule:
-    # Runs daily at 06:30 Asia/Singapore time (22:30 UTC).
-    - cron: "30 22 * * *"
+    # Runs daily at 08:00 Asia/Singapore time (00:00 UTC).
+    - cron: "00 00 * * *"
 
 permissions:
   contents: read
