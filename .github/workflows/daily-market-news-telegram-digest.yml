@@ -25,6 +25,11 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+          
+      - name: Debug secrets presence
+        run: |
+          if [ -z "${TELEGRAM_BOT_TOKEN:-}" ]; then echo "TELEGRAM_BOT_TOKEN: MISSING"; else echo "TELEGRAM_BOT_TOKEN: PRESENT"; fi
+          if [ -z "${TELEGRAM_CHAT_ID:-}" ]; then echo "TELEGRAM_CHAT_ID: MISSING"; else echo "TELEGRAM_CHAT_ID: PRESENT"; fi
 
       - name: Publish Telegram digest
         env:
