@@ -1,0 +1,30 @@
+name: Daily Market News Telegram Digest
+
+on:
+  workflow_dispatch:
+  schedule:
+    # Runs daily at 06:30 Asia/Singapore time (22:30 UTC).
+    - cron: "30 22 * * *"
+
+permissions:
+  contents: read
+
+jobs:
+  publish-digest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Publish Telegram digest
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: python scripts/daily_market_digest.py
