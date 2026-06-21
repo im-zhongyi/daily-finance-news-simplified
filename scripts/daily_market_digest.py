@@ -109,17 +109,47 @@ def parse_date(raw: str) -> datetime:
     if not raw:
         return datetime.now(UTC)
 
-    parsed = email.utils.parsedate_to_datetime(raw)
-    if parsed is not None:
+    s = raw.strip()
+
+    # Try the robust RFC/RSS parser first
+    try:
+        parsed = email.utils.parsedate_to_datetime(s)
+        if parsed is not None:
+            if parsed.tzinfo is None:
+                return parsed.replace(tzinfo=UTC)
+            return parsed.astimezone(UTC)
+    except Exception:
+        pass
+
+    # Normalize common ISO variants so datetime.fromisoformat can handle them
+    # e.g. 2026-06-19T22:33:00Z -> 2026-06-19T22:33:00+00:00
+    s_iso = s
+    if s_iso.endswith("Z"):
+        s_iso = s_iso[:-1] + "+00:00"
+
+    # Convert timezone offsets like +0000 to +00:00
+    s_iso = re.sub(r"([+-]\d{2})(\d{2})$", r"\1:\2", s_iso)
+
+    # Drop fractional seconds if present (fromisoformat can handle, but keep safe)
+    s_iso = re.sub(r"\.\d+", "", s_iso)
+
+    try:
+        # datetime.fromisoformat handles YYYY-MM-DDTHH:MM:SS(+|-)HH:MM
+        parsed = datetime.fromisoformat(s_iso)
         if parsed.tzinfo is None:
             return parsed.replace(tzinfo=UTC)
         return parsed.astimezone(UTC)
+    except Exception:
+        pass
 
-    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%SZ"):
+    # Fallback common strptime formats
+    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S"):
         try:
-            return datetime.strptime(raw, fmt).replace(tzinfo=UTC)
-        except ValueError:
+            return datetime.strptime(s.split(" ")[0] if "T" in fmt and " " in s else s, fmt).replace(tzinfo=UTC)
+        except Exception:
             pass
+
+    # Give up gracefully and return current time in UTC
     return datetime.now(UTC)
 
 
