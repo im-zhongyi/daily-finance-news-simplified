@@ -35,4 +35,10 @@ jobs:
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          ARTICLE_MODE: template
+          # To switch to LLM-written articles, set ARTICLE_MODE to "llm" above and
+          # add these (LLM_API_KEY must be a repository secret):
+          # LLM_API_BASE: https://api.openai.com/v1
+          # LLM_MODEL: gpt-4o-mini
+          # LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
         run: python scripts/daily_market_digest.py
