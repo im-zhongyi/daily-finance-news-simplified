@@ -13,13 +13,15 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from html.parser import HTMLParser
 
 
 FEEDS = [
     ("Google News", "https://news.google.com/rss/search?q=finance+market&hl=en-US&gl=US&ceid=US:en"),
-    ("Yahoo Finance", "https://finance.yahoo.com/rss/finance"),
+    ("Yahoo Finance", "https://feeds.finance.yahoo.com/rss/2.0/headline?s=%5EGSPC&region=US&lang=en-US"),
     ("Investing.com", "https://www.investing.com/rss/news.rss"),
 ]
 
@@ -35,6 +37,10 @@ NOISE_PENALTY = 25
 
 TELEGRAM_MESSAGE_LIMIT = 4096
 ARTICLE_TARGET_WORDS = 1100
+ARTICLE_FETCH_TIMEOUT_SECONDS = 15
+MAX_ARTICLE_WORDS = 1500
+MIN_ARTICLE_WORDS = 120
+BROWSER_USER_AGENT = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36"
 ARTICLE_HEADER = "5-Minute Market Read"
 
 # (pattern, weight, category). Word-boundary patterns avoid substring false
@@ -567,27 +573,81 @@ def call_llm(system_prompt: str, user_prompt: str) -> str:
         raise RuntimeError(f"Unexpected LLM response shape: {body[:500]}") from exc
 
 
-def render_llm_article(items: list[FeedItem], tone_line: str) -> str:
-    lines = []
-    for item in items:
-        bullish, bearish = sentiment_score(f"{item.title}. {item.summary}")
-        lines.append(
-            f"- [{dominant_category(item)} / {sentiment_label(bullish, bearish)}] "
-            f"{item.title}. {item.summary}"
-        )
+class _ParagraphParser(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__()
+        self.paragraphs: list[str] = []
+        self._buf: list[str] | None = None
+        self._skip = 0
 
-    user_prompt = (
-        f"{tone_line}\n\n"
-        "Today's top market headlines (category / sentiment tag, then headline and summary):\n"
-        + "\n".join(lines)
-    )
+    def handle_starttag(self, tag: str, attrs: list) -> None:
+        if tag in ("script", "style"):
+            self._skip += 1
+        elif tag == "p":
+            self._buf = []
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag in ("script", "style"):
+            self._skip = max(0, self._skip - 1)
+        elif tag == "p" and self._buf is not None:
+            text = " ".join("".join(self._buf).split())
+            if len(text.split()) >= 8:  # drop nav/boilerplate fragments
+                self.paragraphs.append(text)
+            self._buf = None
+
+    def handle_data(self, data: str) -> None:
+        if self._buf is not None and not self._skip:
+            self._buf.append(data)
+
+
+def fetch_article_text(url: str) -> str:
+    """Best-effort article body from <p> tags; "" on any failure or paywall."""
+    # ponytail: Google News links are encrypted redirects, so they are skipped and
+    # fall back to the RSS snippet; resolve them via Google's batchexecute if needed.
+    if "news.google.com" in url:
+        return ""
+    try:
+        request = urllib.request.Request(url, headers={"User-Agent": BROWSER_USER_AGENT})
+        with urllib.request.urlopen(request, timeout=ARTICLE_FETCH_TIMEOUT_SECONDS) as response:
+            page = response.read(2_000_000).decode("utf-8", errors="replace")
+        parser = _ParagraphParser()
+        parser.feed(page)
+    except Exception:
+        return ""
+    words = " ".join(parser.paragraphs).split()
+    if len(words) < MIN_ARTICLE_WORDS:
+        return ""
+    return " ".join(words[:MAX_ARTICLE_WORDS])
+
+
+def render_llm_article(items: list[FeedItem], tone_line: str) -> str:
+    with ThreadPoolExecutor(max_workers=len(items)) as pool:
+        bodies = list(pool.map(lambda item: fetch_article_text(item.link), items))
+
+    blocks = []
+    for number, (item, body) in enumerate(zip(items, bodies), start=1):
+        bullish, bearish = sentiment_score(f"{item.title}. {item.summary}")
+        scope = "FULL TEXT" if body else "SNIPPET ONLY"
+        blocks.append(
+            f"[{number}] {item.title} ({item.source})\n"
+            f"category: {dominant_category(item)}; sentiment: {sentiment_label(bullish, bearish)}; {scope}\n"
+            f"{body or item.summary}"
+        )
+    print(f"Full text for {sum(1 for b in bodies if b)}/{len(items)} articles.", file=sys.stderr)
+
+    user_prompt = f"{tone_line}\n\nToday's top market stories:\n\n" + "\n\n".join(blocks)
     system_prompt = (
         f"You are a markets editor. Write a cohesive ~{ARTICLE_TARGET_WORDS}-word "
-        "(5-minute read) article synthesizing today's macro/market news into a narrative "
-        "organized by theme (policy, growth, inflation, equities, etc. as relevant). "
-        "Plain paragraphs only: no markdown, no headers, no bullet points, no links, "
-        "since this goes directly into a plain-text chat message. Open with the overall "
-        "macro tone and close with a short forward-looking wrap-up."
+        "(5-minute read) article from the stories below. Do not summarize them one by one: "
+        "find the relationships between them (shared drivers, cause and effect, e.g. policy "
+        "expectations -> yields -> equities -> FX) and organize the article around those "
+        "linked themes, noting where stories reinforce or contradict each other. Mention "
+        "stories by [number] only if needed for clarity. Stories marked SNIPPET ONLY come "
+        "with just a headline and a short blurb: do not claim details beyond what is given. "
+        "Use only facts in the provided text. Plain paragraphs only: no markdown, no "
+        "headers, no bullet points, no links, since this goes into a plain-text chat "
+        "message. Open with the overall macro tone and close with a short forward-looking "
+        "wrap-up."
     )
     return call_llm(system_prompt, user_prompt)
 
